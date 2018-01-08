@@ -1,3 +1,4 @@
+import os
 import os.path as osp
 import gym
 import time
@@ -15,6 +16,7 @@ from baselines.a2c.utils import discount_with_dones
 from baselines.a2c.utils import Scheduler, make_path, find_trainable_variables
 from baselines.a2c.policies import CnnPolicy
 from baselines.a2c.utils import cat_entropy, mse
+from collections import deque
 
 class Model(object):
 
@@ -69,7 +71,7 @@ class Model(object):
 
         def save(save_path):
             ps = sess.run(params)
-            make_path(save_path)
+            #make_path(save_path)
             joblib.dump(ps, save_path)
 
         def load(load_path):
@@ -115,13 +117,17 @@ class Runner(object):
     def run(self):
         mb_obs, mb_rewards, mb_actions, mb_values, mb_dones = [],[],[],[],[]
         mb_states = self.states
+        epinfos = []
         for n in range(self.nsteps):
             actions, values, states = self.model.step(self.obs, self.states, self.dones)
             mb_obs.append(np.copy(self.obs))
             mb_actions.append(actions)
             mb_values.append(values)
             mb_dones.append(self.dones)
-            obs, rewards, dones, _ = self.env.step(actions)
+            obs, rewards, dones, infos = self.env.step(actions)
+            for info in infos:
+                maybeepinfo = info.get('episode')
+                if maybeepinfo: epinfos.append(maybeepinfo)
             self.states = states
             self.dones = dones
             for n, done in enumerate(dones):
@@ -152,10 +158,10 @@ class Runner(object):
         mb_actions = mb_actions.flatten()
         mb_values = mb_values.flatten()
         mb_masks = mb_masks.flatten()
-        return mb_obs, mb_states, mb_rewards, mb_masks, mb_actions, mb_values
+        return mb_obs, mb_states, mb_rewards, mb_masks, mb_actions, mb_values, epinfos
 
-def learn(policy, env, seed, nsteps=5, nstack=4, total_timesteps=int(80e6), vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5, lr=7e-4, lrschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99, log_interval=100):
-    tf.reset_default_graph()
+def learn(policy, env, seed, nsteps=5, nstack=4, total_timesteps=int(80e6), vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5, lr=7e-4, lrschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99, log_interval=100,save_interval=10000):
+    #tf.reset_default_graph()
     set_global_seeds(seed)
 
     nenvs = env.num_envs
@@ -167,22 +173,36 @@ def learn(policy, env, seed, nsteps=5, nstack=4, total_timesteps=int(80e6), vf_c
     runner = Runner(env, model, nsteps=nsteps, nstack=nstack, gamma=gamma)
 
     nbatch = nenvs*nsteps
+    epinfobuf = deque(maxlen=100)
     tstart = time.time()
     for update in range(1, total_timesteps//nbatch+1):
-        obs, states, rewards, masks, actions, values = runner.run()
+        obs, states, rewards, masks, actions, values, epinfos = runner.run()
         policy_loss, value_loss, policy_entropy = model.train(obs, states, rewards, masks, actions, values)
         nseconds = time.time()-tstart
         fps = int((update*nbatch)/nseconds)
+        epinfobuf.extend(epinfos)
         if update % log_interval == 0 or update == 1:
             ev = explained_variance(values, rewards)
-            logger.record_tabular("nupdates", update)
-            logger.record_tabular("total_timesteps", update*nbatch)
-            logger.record_tabular("fps", fps)
-            logger.record_tabular("policy_entropy", float(policy_entropy))
-            logger.record_tabular("value_loss", float(value_loss))
-            logger.record_tabular("explained_variance", float(ev))
+            logger.logkv("nupdates", update)
+            logger.logkv("total_timesteps", update*nbatch)
+            logger.logkv("fps", fps)
+            logger.logkv("policy_entropy", float(policy_entropy))
+            logger.logkv("value_loss", float(value_loss))
+            logger.logkv("explained_variance", float(ev))
+            logger.logkv('eprewmean', safemean([epinfo['r'] for epinfo in epinfobuf]))
+            logger.logkv('eplenmean', safemean([epinfo['l'] for epinfo in epinfobuf]))
+            #logger.record_tabular("score", np.sum(rewards))
             logger.dump_tabular()
+        if save_interval and (update % save_interval == 0 or update == 1) and logger.get_dir():
+            checkdir = osp.join(logger.get_dir(), 'checkpoints')
+            os.makedirs(checkdir, exist_ok=True)
+            savepath = osp.join(checkdir, '%.5i'%update)
+            print('Saving to', savepath)
+            model.save(savepath)
     env.close()
+
+def safemean(xs):
+    return np.nan if len(xs) == 0 else np.mean(xs)
 
 if __name__ == '__main__':
     main()
