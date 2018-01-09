@@ -128,10 +128,9 @@ class CnnPolicy2(object):
         nact = ac_space.n
         X = tf.placeholder(tf.uint8, ob_shape) #obs
         with tf.variable_scope("model", reuse=reuse):
-            h = conv(tf.cast(X, tf.float32)/255., 'c1', nf=16, rf=4, stride=4, init_scale=np.sqrt(2))
-            h2 = conv(h, 'c2', nf=32, rf=2, stride=2, init_scale=np.sqrt(2))
-            h3 = conv(h2, 'c3', nf=32, rf=1, stride=1, init_scale=np.sqrt(2))
-            h3 = conv_to_fc(h3)
+            h = conv(tf.cast(X, tf.float32)/255., 'c1', nf=16, rf=4, stride=2, init_scale=np.sqrt(2))
+            h2 = conv(h, 'c2', nf=32, rf=3, stride=1, init_scale=np.sqrt(2))
+            h3 = conv_to_fc(h2)
             h4 = fc(h3, 'fc1', nh=512, init_scale=np.sqrt(2))
             pi = fc(h4, 'pi', nact, act=lambda x:x)
             vf = fc(h4, 'v', 1, act=lambda x:x)
